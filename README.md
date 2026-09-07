@@ -4,7 +4,7 @@ A lightweight `systemd` override configuration to automatically resolve SSH boot
 
 ## Quick Install (One-Liner)
 
-Click the **Copy code** icon in the top-right corner of the code block below:
+Click the **Copy code** button in the top-right corner of the code block below:
 
 ```bash
 curl -sSL [https://raw.githubusercontent.com/himydearfriends1934-cmyk/ssh-tailscale-autorestart/main/install.sh](https://raw.githubusercontent.com/himydearfriends1934-cmyk/ssh-tailscale-autorestart/main/install.sh) | sudo bash
