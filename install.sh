@@ -213,14 +213,14 @@ detect_ssh_service() {
     local SERVICE
 
     for SERVICE in ssh.service sshd.service; do
-        if systemctl is-active --quiet "${SERVICE}"; then
+        if systemctl is-active --quiet "${SERVICE}" 2>/dev/null; then
             echo "${SERVICE}"
             return 0
         fi
     done
 
     for SERVICE in ssh.service sshd.service; do
-        if systemctl is-enabled --quiet "${SERVICE}"; then
+        if systemctl is-enabled --quiet "${SERVICE}" 2>/dev/null; then
             echo "${SERVICE}"
             return 0
         fi
@@ -293,10 +293,7 @@ validate_sshd_config() {
         return 1
     fi
 
-    echo "[INFO] Validating SSH configuration..."
-
     if "${SSHD_BIN}" -t; then
-        echo "[SUCCESS] SSH configuration is valid."
         return 0
     fi
 
@@ -314,9 +311,6 @@ validate_sshd_config() {
 # ------------------------------------------------------------
 
 create_watcher_script() {
-
-    echo "[INFO] Installing Tailscale IP watcher:"
-    echo "       ${WATCHER_PATH}"
 
     if ! cat > "${WATCHER_PATH}" <<'WATCHER_EOF'
 #!/usr/bin/env bash
@@ -474,9 +468,6 @@ create_watcher_service() {
 
     local SERVICE_FILE="/etc/systemd/system/${WATCHER_SERVICE}"
 
-    echo "[INFO] Installing systemd watcher:"
-    echo "       ${SERVICE_FILE}"
-
     if ! cat > "${SERVICE_FILE}" <<EOF
 [Unit]
 # Managed by ssh-tailscale-autorestart
@@ -522,9 +513,6 @@ create_ssh_override() {
     local OVERRIDE_DIR="/etc/systemd/system/${SSH_SERVICE}.d"
     local OVERRIDE_FILE="${OVERRIDE_DIR}/${OVERRIDE_NAME}"
 
-    echo "[INFO] Creating SSH systemd override:"
-    echo "       ${OVERRIDE_FILE}"
-
     mkdir -p "${OVERRIDE_DIR}"
 
     if ! cat > "${OVERRIDE_FILE}" <<EOF
@@ -554,12 +542,6 @@ EOF
 
 install_ssh_policy() {
 
-    echo
-    echo "=============================================="
-    echo " Installing SSH Auto-Restart v2"
-    echo "=============================================="
-    echo
-
     # --------------------------------------------------------
     # Detect SSH
     # --------------------------------------------------------
@@ -572,8 +554,6 @@ install_ssh_policy() {
         echo
         return 1
     fi
-
-    echo "[INFO] SSH service: ${SSH_SERVICE}"
 
     # --------------------------------------------------------
     # Detect Tailscale
@@ -588,8 +568,6 @@ install_ssh_policy() {
         return 1
     fi
 
-    echo "[INFO] Tailscale service: ${TAILSCALE_SERVICE}"
-
     if ! TAILSCALE_COMMAND="$(detect_tailscale_command)"; then
         echo
         echo "[ERROR] tailscale command was not found."
@@ -599,18 +577,12 @@ install_ssh_policy() {
         return 1
     fi
 
-    echo "[INFO] Tailscale command: ${TAILSCALE_COMMAND}"
-
     # --------------------------------------------------------
     # Check Tailscale service
     # --------------------------------------------------------
 
-    if ! systemctl is-active --quiet tailscaled.service; then
-        echo
-        echo "[INFO] tailscaled.service is not running."
-        echo "[INFO] Starting Tailscale..."
-
-        if ! systemctl start tailscaled.service; then
+    if ! systemctl is-active --quiet tailscaled.service 2>/dev/null; then
+        if ! systemctl start tailscaled.service >/dev/null 2>&1; then
             echo
             echo "[ERROR] Failed to start tailscaled.service."
             echo
@@ -687,10 +659,7 @@ install_ssh_policy() {
     # Reload systemd
     # --------------------------------------------------------
 
-    echo
-    echo "[INFO] Reloading systemd..."
-
-    if ! systemctl daemon-reload; then
+    if ! systemctl daemon-reload >/dev/null 2>&1; then
         echo "[ERROR] systemd daemon-reload failed."
         rollback_install
         return 1
@@ -700,9 +669,7 @@ install_ssh_policy() {
     # Enable watcher
     # --------------------------------------------------------
 
-    echo "[INFO] Enabling watcher service..."
-
-    if ! systemctl enable "${WATCHER_SERVICE}"; then
+    if ! systemctl enable "${WATCHER_SERVICE}" >/dev/null 2>&1; then
         echo "[ERROR] Failed to enable watcher service."
         rollback_install
         return 1
@@ -712,12 +679,7 @@ install_ssh_policy() {
     # Restart SSH
     # --------------------------------------------------------
 
-    echo
-    echo "[INFO] Restarting ${SSH_SERVICE}..."
-
-    if systemctl restart "${SSH_SERVICE}"; then
-        echo "[SUCCESS] SSH restarted successfully."
-    else
+    if ! systemctl restart "${SSH_SERVICE}" >/dev/null 2>&1; then
         echo
         echo "[ERROR] SSH restart failed."
         echo
@@ -735,12 +697,7 @@ install_ssh_policy() {
     # Start watcher
     # --------------------------------------------------------
 
-    echo
-    echo "[INFO] Starting ${WATCHER_SERVICE}..."
-
-    if systemctl restart "${WATCHER_SERVICE}"; then
-        echo "[SUCCESS] Tailscale SSH watcher started."
-    else
+    if ! systemctl restart "${WATCHER_SERVICE}" >/dev/null 2>&1; then
         echo
         echo "[ERROR] Failed to start Tailscale SSH watcher."
         echo
@@ -755,46 +712,7 @@ install_ssh_policy() {
 
     finish_install
 
-    # --------------------------------------------------------
-    # Show status
-    # --------------------------------------------------------
-
-    echo
-    echo "=============================================="
-    echo " Installation completed"
-    echo "=============================================="
-    echo
-
-    echo "SSH service:"
-    echo "  ${SSH_SERVICE}"
-    echo
-
-    echo "Tailscale service:"
-    echo "  ${TAILSCALE_SERVICE}"
-    echo
-
-    echo "SSH configuration:"
-    echo "  /etc/systemd/system/${SSH_SERVICE}.d/${OVERRIDE_NAME}"
-    echo
-
-    echo "Watcher:"
-    echo "  ${WATCHER_PATH}"
-    echo
-
-    echo "Watcher service:"
-    echo "  ${WATCHER_SERVICE}"
-    echo
-
-    echo "Useful commands:"
-    echo
-    echo "  systemctl status ${SSH_SERVICE}"
-    echo
-    echo "  systemctl status ${WATCHER_SERVICE}"
-    echo
-    echo "  journalctl -u ${WATCHER_SERVICE} -f"
-    echo
-    echo "  tailscale ip -4"
-    echo
+    echo "Installation completed."
 }
 
 # ------------------------------------------------------------
@@ -802,12 +720,6 @@ install_ssh_policy() {
 # ------------------------------------------------------------
 
 uninstall_ssh_policy() {
-
-    echo
-    echo "=============================================="
-    echo " Uninstalling SSH Auto-Restart v2"
-    echo "=============================================="
-    echo
 
     REMOVED=0
 
@@ -817,11 +729,7 @@ uninstall_ssh_policy() {
 
     if systemctl list-unit-files "${WATCHER_SERVICE}" >/dev/null 2>&1; then
 
-        echo "[INFO] Stopping ${WATCHER_SERVICE}..."
-
         systemctl stop "${WATCHER_SERVICE}" >/dev/null 2>&1 || true
-
-        echo "[INFO] Disabling ${WATCHER_SERVICE}..."
 
         systemctl disable "${WATCHER_SERVICE}" >/dev/null 2>&1 || true
 
@@ -835,8 +743,6 @@ uninstall_ssh_policy() {
 
     if [[ -e "${WATCHER_SERVICE_FILE}" ]]; then
         if remove_managed_file "${WATCHER_SERVICE_FILE}"; then
-            echo "[INFO] Removing:"
-            echo "       ${WATCHER_SERVICE_FILE}"
             REMOVED=1
         fi
     fi
@@ -847,8 +753,6 @@ uninstall_ssh_policy() {
 
     if [[ -e "${WATCHER_PATH}" ]]; then
         if remove_managed_file "${WATCHER_PATH}"; then
-            echo "[INFO] Removing:"
-            echo "       ${WATCHER_PATH}"
             REMOVED=1
         fi
     fi
@@ -866,8 +770,6 @@ uninstall_ssh_policy() {
 
             if [[ -e "${OVERRIDE_FILE}" ]]; then
                 if remove_managed_file "${OVERRIDE_FILE}"; then
-                    echo "[INFO] Removing:"
-                    echo "       ${OVERRIDE_FILE}"
                     REMOVED=1
                 fi
             fi
@@ -883,10 +785,7 @@ uninstall_ssh_policy() {
     # Reload systemd
     # --------------------------------------------------------
 
-    echo
-    echo "[INFO] Reloading systemd..."
-
-    if ! systemctl daemon-reload; then
+    if ! systemctl daemon-reload >/dev/null 2>&1; then
         echo "[ERROR] systemd daemon-reload failed."
         return 1
     fi
@@ -897,14 +796,9 @@ uninstall_ssh_policy() {
 
     if SSH_SERVICE="$(detect_ssh_service)"; then
 
-        echo
-        echo "[INFO] Restarting ${SSH_SERVICE}..."
-
         if validate_sshd_config; then
 
-            if systemctl restart "${SSH_SERVICE}"; then
-                echo "[SUCCESS] SSH restarted successfully."
-            else
+            if ! systemctl restart "${SSH_SERVICE}" >/dev/null 2>&1; then
                 echo "[WARNING] SSH restart failed."
                 echo
                 echo "Check:"
@@ -919,31 +813,31 @@ uninstall_ssh_policy() {
 
     fi
 
-    # --------------------------------------------------------
-    # Result
-    # --------------------------------------------------------
-
-    echo
-
     if [[ "${REMOVED}" -eq 1 ]]; then
-
-        echo "=============================================="
-        echo " Uninstallation completed"
-        echo "=============================================="
-        echo
-        echo "[SUCCESS] SSH auto-restart has been removed."
-        echo
+        echo "Configuration removed. SSH restored."
 
     else
-
-        echo "=============================================="
-        echo " Nothing to uninstall"
-        echo "=============================================="
-        echo
-        echo "[INFO] No configuration was found."
-        echo
+        echo "Nothing to uninstall."
 
     fi
+}
+
+confirm_uninstall() {
+    local CONFIRMATION
+
+    if ! read -r -p "Delete configuration and restore the pre-install state? [y/N]: " CONFIRMATION; then
+        echo "Cancelled."
+        return 0
+    fi
+
+    case "${CONFIRMATION}" in
+        y|Y|yes|YES)
+            uninstall_ssh_policy
+            ;;
+        *)
+            echo "Cancelled."
+            ;;
+    esac
 }
 
 # ------------------------------------------------------------
@@ -959,49 +853,29 @@ usage() {
 run_menu() {
     local CHOICE
 
-    while true; do
-        echo
-        echo "=============================================="
-        echo " SSH Auto-Restart for Tailscale / VPN IP"
-        echo " Version 2.1"
-        echo "=============================================="
-        echo
-        echo "  1) Install"
-        echo "  2) Uninstall"
-        echo "  3) Exit"
-        echo
+    echo "1) Install"
+    echo "2) Delete configuration and restore the pre-install state"
+    echo "3) Exit"
 
-        if ! read -r -p "Please select [1-3]: " CHOICE; then
-            echo
-            echo "[INFO] No interactive input available. Exiting."
+    if ! read -r -p "Select [1-3]: " CHOICE; then
+        return 0
+    fi
+
+    case "${CHOICE}" in
+        1)
+            install_ssh_policy
+            ;;
+        2)
+            confirm_uninstall
+            ;;
+        3)
             return 0
-        fi
-
-        case "${CHOICE}" in
-            1)
-                if ! install_ssh_policy; then
-                    echo
-                    echo "[ERROR] Installation failed."
-                    echo
-                    return 1
-                fi
-                ;;
-            2)
-                uninstall_ssh_policy
-                ;;
-            3)
-                echo
-                echo "[INFO] Exiting."
-                echo
-                return 0
-                ;;
-            *)
-                echo
-                echo "[ERROR] Invalid selection."
-                echo
-                ;;
-        esac
-    done
+            ;;
+        *)
+            echo "[ERROR] Invalid selection."
+            return 1
+            ;;
+    esac
 }
 
 case "${1:-}" in
@@ -1009,7 +883,11 @@ case "${1:-}" in
         install_ssh_policy
         ;;
     uninstall)
-        uninstall_ssh_policy
+        if [[ -t 0 && -t 1 ]]; then
+            confirm_uninstall
+        else
+            uninstall_ssh_policy
+        fi
         ;;
     "")
         if [[ ! -t 0 ]]; then

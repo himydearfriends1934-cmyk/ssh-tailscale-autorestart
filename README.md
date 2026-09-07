@@ -96,6 +96,22 @@ sudo bash install.sh
 
 管道执行时请显式指定 `install`，因为脚本内容本身占用了标准输入。
 
+安装成功时只显示：
+
+```text
+Installation completed.
+```
+
+不带参数运行下载后的脚本会显示简洁菜单：
+
+```text
+1) Install
+2) Delete configuration and restore the pre-install state
+3) Exit
+```
+
+选择第 2 项时会先要求确认，然后删除本项目配置并恢复 SSH 到安装前的 systemd 状态。
+
 ---
 
 # Install
@@ -429,6 +445,8 @@ systemctl daemon-reload
 ```bash
 curl -fsSL https://raw.githubusercontent.com/himydearfriends1934-cmyk/ssh-tailscale-autorestart/main/install.sh | sudo bash -s -- uninstall
 ```
+
+也可以在交互菜单中选择 `2`，确认后删除本项目配置并恢复 SSH。
 
 卸载只会删除带有本项目标记的文件，以及能够明确识别为旧版本生成的文件：
 
