@@ -3,7 +3,7 @@ set -euo pipefail
 
 # ============================================================
 # SSH Auto-Restart for Tailscale / VPN IP Binding
-# Version: 2.0
+# Version: 2.1
 #
 # Features:
 #   - Detect ssh.service / sshd.service
@@ -18,12 +18,17 @@ set -euo pipefail
 # https://github.com/himydearfriends1934-cmyk/ssh-tailscale-autorestart
 # ============================================================
 
-set +e
-
 PROJECT_NAME="ssh-tailscale-autorestart"
 WATCHER_PATH="/usr/local/sbin/tailscale-ssh-watch"
 WATCHER_SERVICE="tailscale-ssh-watch.service"
-OVERRIDE_NAME="override.conf"
+OVERRIDE_NAME="90-tailscale-ssh-autorestart.conf"
+MANAGED_HEADER="# Managed by ${PROJECT_NAME}"
+
+declare -a INSTALL_BACKUP_FILES=()
+declare -a INSTALL_CREATED_FILES=()
+INSTALL_BACKUP_DIR=""
+WATCHER_WAS_ENABLED=0
+WATCHER_WAS_ACTIVE=0
 
 # ------------------------------------------------------------
 # Root check
@@ -34,10 +39,160 @@ if [[ "${EUID}" -ne 0 ]]; then
     echo "[ERROR] Please run this script as root."
     echo
     echo "Example:"
-    echo "  curl -fsSL https://raw.githubusercontent.com/himydearfriends1934-cmyk/ssh-tailscale-autorestart/main/install.sh | sudo bash"
+    echo "  curl -fsSL https://raw.githubusercontent.com/himydearfriends1934-cmyk/ssh-tailscale-autorestart/main/install.sh | sudo bash -s -- install"
     echo
     exit 1
 fi
+
+# ------------------------------------------------------------
+# File ownership and install rollback helpers
+# ------------------------------------------------------------
+
+is_managed_file() {
+    local FILE="$1"
+
+    [[ -f "${FILE}" ]] &&
+        grep -Fqx "${MANAGED_HEADER}" "${FILE}"
+}
+
+is_legacy_watcher_script() {
+    local FILE="$1"
+
+    [[ -f "${FILE}" ]] &&
+        grep -Fq "[tailscale-ssh-watch]" "${FILE}" &&
+        grep -Fq "tailscale ip -4" "${FILE}" &&
+        grep -Fq "PREVIOUS_IP" "${FILE}"
+}
+
+is_legacy_watcher_service() {
+    local FILE="$1"
+
+    [[ -f "${FILE}" ]] &&
+        grep -Fqx "ExecStart=${WATCHER_PATH}" "${FILE}" &&
+        grep -Fq "Description=Watch Tailscale IPv4 and restart SSH when it changes" "${FILE}"
+}
+
+is_legacy_ssh_override() {
+    local FILE="$1"
+
+    [[ -f "${FILE}" ]] &&
+        (
+            (
+                grep -Fqx "After=tailscaled.service" "${FILE}" &&
+                grep -Fqx "Wants=tailscaled.service" "${FILE}" &&
+                grep -Fqx "RestartSec=3s" "${FILE}" &&
+                (grep -Fqx "Restart=on-failure" "${FILE}" ||
+                    grep -Fqx "Restart=always" "${FILE}")
+            ) ||
+            (
+                grep -Fqx "Restart=always" "${FILE}" &&
+                grep -Fqx "RestartSec=5s" "${FILE}" &&
+                grep -Fqx "StartLimitIntervalSec=0" "${FILE}"
+            )
+        )
+}
+
+prepare_target() {
+    local FILE="$1"
+    local BACKUP
+
+    if [[ -e "${FILE}" && ! -f "${FILE}" ]]; then
+        echo "[ERROR] Target is not a regular file: ${FILE}"
+        return 1
+    fi
+
+    if [[ -f "${FILE}" ]] &&
+       ! is_managed_file "${FILE}" &&
+       ! is_legacy_watcher_script "${FILE}" &&
+       ! is_legacy_watcher_service "${FILE}" &&
+       ! is_legacy_ssh_override "${FILE}"; then
+        echo "[ERROR] Refusing to overwrite an unmanaged file:"
+        echo "        ${FILE}"
+        echo "[ERROR] Remove it manually only after verifying its contents."
+        return 1
+    fi
+
+    if [[ -f "${FILE}" ]]; then
+        BACKUP="${INSTALL_BACKUP_DIR}${FILE}"
+        if ! mkdir -p "$(dirname "${BACKUP}")" || ! cp -a -- "${FILE}" "${BACKUP}"; then
+            echo "[ERROR] Failed to back up ${FILE}."
+            return 1
+        fi
+        INSTALL_BACKUP_FILES+=("${FILE}")
+    else
+        INSTALL_CREATED_FILES+=("${FILE}")
+    fi
+}
+
+rollback_install() {
+    local FILE
+    local BACKUP
+    systemctl disable --now "${WATCHER_SERVICE}" >/dev/null 2>&1 || true
+
+    for FILE in "${INSTALL_CREATED_FILES[@]}"; do
+        rm -f -- "${FILE}"
+    done
+
+    for FILE in "${INSTALL_BACKUP_FILES[@]}"; do
+        BACKUP="${INSTALL_BACKUP_DIR}${FILE}"
+        if [[ -f "${BACKUP}" ]]; then
+            cp -a -- "${BACKUP}" "${FILE}"
+        fi
+    done
+
+    systemctl daemon-reload >/dev/null 2>&1 || true
+
+    if [[ -n "${SSH_SERVICE:-}" ]]; then
+        systemctl restart "${SSH_SERVICE}" >/dev/null 2>&1 || true
+    fi
+
+    if [[ "${WATCHER_WAS_ENABLED}" -eq 1 ]]; then
+        systemctl enable --now "${WATCHER_SERVICE}" >/dev/null 2>&1 || true
+    elif [[ "${WATCHER_WAS_ACTIVE}" -eq 1 ]]; then
+        systemctl start "${WATCHER_SERVICE}" >/dev/null 2>&1 || true
+    fi
+
+    if [[ -n "${INSTALL_BACKUP_DIR}" && -d "${INSTALL_BACKUP_DIR}" ]]; then
+        rm -rf -- "${INSTALL_BACKUP_DIR}"
+    fi
+
+    INSTALL_BACKUP_FILES=()
+    INSTALL_CREATED_FILES=()
+    INSTALL_BACKUP_DIR=""
+    WATCHER_WAS_ENABLED=0
+    WATCHER_WAS_ACTIVE=0
+}
+
+finish_install() {
+    if [[ -n "${INSTALL_BACKUP_DIR}" && -d "${INSTALL_BACKUP_DIR}" ]]; then
+        rm -rf -- "${INSTALL_BACKUP_DIR}"
+    fi
+
+    INSTALL_BACKUP_FILES=()
+    INSTALL_CREATED_FILES=()
+    INSTALL_BACKUP_DIR=""
+    WATCHER_WAS_ENABLED=0
+    WATCHER_WAS_ACTIVE=0
+}
+
+remove_managed_file() {
+    local FILE="$1"
+
+    if [[ ! -e "${FILE}" ]]; then
+        return 0
+    fi
+
+    if ! is_managed_file "${FILE}" &&
+       ! is_legacy_watcher_script "${FILE}" &&
+       ! is_legacy_watcher_service "${FILE}" &&
+       ! is_legacy_ssh_override "${FILE}"; then
+        echo "[WARNING] Preserving unmanaged file:"
+        echo "          ${FILE}"
+        return 1
+    fi
+
+    rm -f -- "${FILE}"
+}
 
 # ------------------------------------------------------------
 # systemd check
@@ -55,15 +210,28 @@ fi
 # ------------------------------------------------------------
 
 detect_ssh_service() {
-    if systemctl cat ssh.service >/dev/null 2>&1; then
-        echo "ssh.service"
-        return 0
-    fi
+    local SERVICE
 
-    if systemctl cat sshd.service >/dev/null 2>&1; then
-        echo "sshd.service"
-        return 0
-    fi
+    for SERVICE in ssh.service sshd.service; do
+        if systemctl is-active --quiet "${SERVICE}"; then
+            echo "${SERVICE}"
+            return 0
+        fi
+    done
+
+    for SERVICE in ssh.service sshd.service; do
+        if systemctl is-enabled --quiet "${SERVICE}"; then
+            echo "${SERVICE}"
+            return 0
+        fi
+    done
+
+    for SERVICE in ssh.service sshd.service; do
+        if systemctl cat "${SERVICE}" >/dev/null 2>&1; then
+            echo "${SERVICE}"
+            return 0
+        fi
+    done
 
     return 1
 }
@@ -150,11 +318,13 @@ create_watcher_script() {
     echo "[INFO] Installing Tailscale IP watcher:"
     echo "       ${WATCHER_PATH}"
 
-    cat > "${WATCHER_PATH}" <<'WATCHER_EOF'
+    if ! cat > "${WATCHER_PATH}" <<'WATCHER_EOF'
 #!/usr/bin/env bash
+# Managed by ssh-tailscale-autorestart
 set -u
 
 SSH_SERVICE="${SSH_SERVICE:-ssh.service}"
+TAILSCALE_COMMAND="${TAILSCALE_COMMAND:-tailscale}"
 CHECK_INTERVAL="${CHECK_INTERVAL:-2}"
 
 log() {
@@ -163,14 +333,18 @@ log() {
 
 get_tailscale_ip() {
     local IP=""
+    local OCTET
+    local OCTETS
 
-    if ! command -v tailscale >/dev/null 2>&1; then
-        return 1
-    fi
-
-    IP="$(tailscale ip -4 2>/dev/null | head -n1 | tr -d '[:space:]')"
+    IP="$("${TAILSCALE_COMMAND}" ip -4 2>/dev/null | head -n1 | tr -d '[:space:]')" || return 1
 
     if [[ "${IP}" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
+        IFS='.' read -r -a OCTETS <<< "${IP}"
+        for OCTET in "${OCTETS[@]}"; do
+            if ((10#${OCTET} > 255)); then
+                return 1
+            fi
+        done
         echo "${IP}"
         return 0
     fi
@@ -223,8 +397,13 @@ if ! command -v systemctl >/dev/null 2>&1; then
     exit 1
 fi
 
-if ! command -v tailscale >/dev/null 2>&1; then
-    log "ERROR: tailscale command not found."
+if [[ "${TAILSCALE_COMMAND}" == */* ]]; then
+    if [[ ! -x "${TAILSCALE_COMMAND}" ]]; then
+        log "ERROR: Tailscale command not found: ${TAILSCALE_COMMAND}"
+        exit 1
+    fi
+elif ! command -v "${TAILSCALE_COMMAND}" >/dev/null 2>&1; then
+    log "ERROR: Tailscale command not found: ${TAILSCALE_COMMAND}"
     exit 1
 fi
 
@@ -249,9 +428,10 @@ while true; do
 
             log "Tailscale IPv4 detected: ${CURRENT_IP}"
 
-            # Tailscale IP has just appeared.
             # Restart SSH so ListenAddress bindings can be recreated.
-            restart_ssh
+            if restart_ssh; then
+                PREVIOUS_IP="${CURRENT_IP}"
+            fi
 
         elif [[ "${CURRENT_IP}" != "${PREVIOUS_IP}" ]]; then
 
@@ -259,10 +439,10 @@ while true; do
             log "  old: ${PREVIOUS_IP}"
             log "  new: ${CURRENT_IP}"
 
-            restart_ssh
+            if restart_ssh; then
+                PREVIOUS_IP="${CURRENT_IP}"
+            fi
         fi
-
-        PREVIOUS_IP="${CURRENT_IP}"
 
     else
 
@@ -277,8 +457,13 @@ while true; do
     sleep "${CHECK_INTERVAL}"
 done
 WATCHER_EOF
+    then
+        return 1
+    fi
 
-    chmod 755 "${WATCHER_PATH}"
+    if ! chmod 755 "${WATCHER_PATH}"; then
+        return 1
+    fi
 }
 
 # ------------------------------------------------------------
@@ -292,12 +477,12 @@ create_watcher_service() {
     echo "[INFO] Installing systemd watcher:"
     echo "       ${SERVICE_FILE}"
 
-    cat > "${SERVICE_FILE}" <<EOF
+    if ! cat > "${SERVICE_FILE}" <<EOF
 [Unit]
+# Managed by ssh-tailscale-autorestart
 Description=Watch Tailscale IPv4 and restart SSH when it changes
-After=network-online.target tailscaled.service ${SSH_SERVICE}
+After=network-online.target tailscaled.service
 Wants=network-online.target tailscaled.service
-Requires=${SSH_SERVICE}
 
 [Service]
 Type=simple
@@ -306,7 +491,8 @@ Restart=always
 RestartSec=3s
 
 # Environment
-Environment=SSH_SERVICE=${SSH_SERVICE}
+Environment="SSH_SERVICE=${SSH_SERVICE}"
+Environment="TAILSCALE_COMMAND=${TAILSCALE_COMMAND}"
 Environment=CHECK_INTERVAL=2
 
 # Security
@@ -318,8 +504,13 @@ ProtectHome=true
 [Install]
 WantedBy=multi-user.target
 EOF
+    then
+        return 1
+    fi
 
-    chmod 644 "${SERVICE_FILE}"
+    if ! chmod 644 "${SERVICE_FILE}"; then
+        return 1
+    fi
 }
 
 # ------------------------------------------------------------
@@ -336,17 +527,25 @@ create_ssh_override() {
 
     mkdir -p "${OVERRIDE_DIR}"
 
-    cat > "${OVERRIDE_FILE}" <<EOF
+    if ! cat > "${OVERRIDE_FILE}" <<EOF
 [Unit]
+# Managed by ssh-tailscale-autorestart
 After=tailscaled.service
 Wants=tailscaled.service
+StartLimitIntervalSec=0
 
 [Service]
+RestartPreventExitStatus=
 Restart=on-failure
 RestartSec=3s
 EOF
+    then
+        return 1
+    fi
 
-    chmod 644 "${OVERRIDE_FILE}"
+    if ! chmod 644 "${OVERRIDE_FILE}"; then
+        return 1
+    fi
 }
 
 # ------------------------------------------------------------
@@ -432,12 +631,57 @@ install_ssh_policy() {
     fi
 
     # --------------------------------------------------------
+    # Prepare files and backups before changing anything
+    # --------------------------------------------------------
+
+    if ! INSTALL_BACKUP_DIR="$(mktemp -d "/tmp/${PROJECT_NAME}.XXXXXX")"; then
+        echo "[ERROR] Failed to create a temporary backup directory."
+        return 1
+    fi
+
+    LEGACY_OVERRIDE_FILE="/etc/systemd/system/${SSH_SERVICE}.d/override.conf"
+    OVERRIDE_FILE="/etc/systemd/system/${SSH_SERVICE}.d/${OVERRIDE_NAME}"
+    WATCHER_SERVICE_FILE="/etc/systemd/system/${WATCHER_SERVICE}"
+
+    if systemctl is-enabled --quiet "${WATCHER_SERVICE}"; then
+        WATCHER_WAS_ENABLED=1
+    fi
+
+    if systemctl is-active --quiet "${WATCHER_SERVICE}"; then
+        WATCHER_WAS_ACTIVE=1
+    fi
+
+    if [[ -f "${LEGACY_OVERRIDE_FILE}" ]] &&
+       is_legacy_ssh_override "${LEGACY_OVERRIDE_FILE}"; then
+        if ! prepare_target "${LEGACY_OVERRIDE_FILE}"; then
+            rollback_install
+            return 1
+        fi
+        if ! rm -f -- "${LEGACY_OVERRIDE_FILE}"; then
+            echo "[ERROR] Failed to remove the legacy project override."
+            rollback_install
+            return 1
+        fi
+    fi
+
+    if ! prepare_target "${WATCHER_PATH}" ||
+       ! prepare_target "${WATCHER_SERVICE_FILE}" ||
+       ! prepare_target "${OVERRIDE_FILE}"; then
+        rollback_install
+        return 1
+    fi
+
+    # --------------------------------------------------------
     # Create files
     # --------------------------------------------------------
 
-    create_watcher_script
-    create_watcher_service
-    create_ssh_override
+    if ! create_watcher_script ||
+       ! create_watcher_service ||
+       ! create_ssh_override; then
+        echo "[ERROR] Failed to write project files."
+        rollback_install
+        return 1
+    fi
 
     # --------------------------------------------------------
     # Reload systemd
@@ -448,6 +692,7 @@ install_ssh_policy() {
 
     if ! systemctl daemon-reload; then
         echo "[ERROR] systemd daemon-reload failed."
+        rollback_install
         return 1
     fi
 
@@ -459,6 +704,7 @@ install_ssh_policy() {
 
     if ! systemctl enable "${WATCHER_SERVICE}"; then
         echo "[ERROR] Failed to enable watcher service."
+        rollback_install
         return 1
     fi
 
@@ -481,7 +727,7 @@ install_ssh_policy() {
         echo "  journalctl -u ${SSH_SERVICE} -b --no-pager"
         echo
 
-        # Do not start watcher if SSH itself cannot start.
+        rollback_install
         return 1
     fi
 
@@ -503,8 +749,11 @@ install_ssh_policy() {
         echo
         echo "  journalctl -u ${WATCHER_SERVICE} -b --no-pager"
         echo
+        rollback_install
         return 1
     fi
+
+    finish_install
 
     # --------------------------------------------------------
     # Show status
@@ -584,26 +833,24 @@ uninstall_ssh_policy() {
 
     WATCHER_SERVICE_FILE="/etc/systemd/system/${WATCHER_SERVICE}"
 
-    if [[ -f "${WATCHER_SERVICE_FILE}" ]]; then
-
-        echo "[INFO] Removing:"
-        echo "       ${WATCHER_SERVICE_FILE}"
-
-        rm -f "${WATCHER_SERVICE_FILE}"
-        REMOVED=1
+    if [[ -e "${WATCHER_SERVICE_FILE}" ]]; then
+        if remove_managed_file "${WATCHER_SERVICE_FILE}"; then
+            echo "[INFO] Removing:"
+            echo "       ${WATCHER_SERVICE_FILE}"
+            REMOVED=1
+        fi
     fi
 
     # --------------------------------------------------------
     # Remove watcher script
     # --------------------------------------------------------
 
-    if [[ -f "${WATCHER_PATH}" ]]; then
-
-        echo "[INFO] Removing:"
-        echo "       ${WATCHER_PATH}"
-
-        rm -f "${WATCHER_PATH}"
-        REMOVED=1
+    if [[ -e "${WATCHER_PATH}" ]]; then
+        if remove_managed_file "${WATCHER_PATH}"; then
+            echo "[INFO] Removing:"
+            echo "       ${WATCHER_PATH}"
+            REMOVED=1
+        fi
     fi
 
     # --------------------------------------------------------
@@ -613,16 +860,18 @@ uninstall_ssh_policy() {
     for SERVICE in ssh.service sshd.service; do
 
         OVERRIDE_DIR="/etc/systemd/system/${SERVICE}.d"
-        OVERRIDE_FILE="${OVERRIDE_DIR}/${OVERRIDE_NAME}"
+        for OVERRIDE_FILE in \
+            "${OVERRIDE_DIR}/${OVERRIDE_NAME}" \
+            "${OVERRIDE_DIR}/override.conf"; do
 
-        if [[ -f "${OVERRIDE_FILE}" ]]; then
-
-            echo "[INFO] Removing:"
-            echo "       ${OVERRIDE_FILE}"
-
-            rm -f "${OVERRIDE_FILE}"
-            REMOVED=1
-        fi
+            if [[ -e "${OVERRIDE_FILE}" ]]; then
+                if remove_managed_file "${OVERRIDE_FILE}"; then
+                    echo "[INFO] Removing:"
+                    echo "       ${OVERRIDE_FILE}"
+                    REMOVED=1
+                fi
+            fi
+        done
 
         if [[ -d "${OVERRIDE_DIR}" ]]; then
             rmdir "${OVERRIDE_DIR}" 2>/dev/null || true
@@ -637,7 +886,10 @@ uninstall_ssh_policy() {
     echo
     echo "[INFO] Reloading systemd..."
 
-    systemctl daemon-reload
+    if ! systemctl daemon-reload; then
+        echo "[ERROR] systemd daemon-reload failed."
+        return 1
+    fi
 
     # --------------------------------------------------------
     # Restart SSH without project override
@@ -695,51 +947,80 @@ uninstall_ssh_policy() {
 }
 
 # ------------------------------------------------------------
-# Menu
+# Command-line and menu entry points
 # ------------------------------------------------------------
 
-while true; do
-
+usage() {
+    echo "Usage: $0 {install|uninstall}"
     echo
-    echo "=============================================="
-    echo " SSH Auto-Restart for Tailscale / VPN IP"
-    echo " Version 2.0"
-    echo "=============================================="
-    echo
-    echo "  1) Install"
-    echo "  2) Uninstall"
-    echo "  3) Exit"
-    echo
-    read -r -p "Please select [1-3]: " CHOICE
+    echo "Without an argument, an interactive menu is shown only on a terminal."
+}
 
-    case "${CHOICE}" in
+run_menu() {
+    local CHOICE
 
-        1)
-            if ! install_ssh_policy; then
+    while true; do
+        echo
+        echo "=============================================="
+        echo " SSH Auto-Restart for Tailscale / VPN IP"
+        echo " Version 2.1"
+        echo "=============================================="
+        echo
+        echo "  1) Install"
+        echo "  2) Uninstall"
+        echo "  3) Exit"
+        echo
+
+        if ! read -r -p "Please select [1-3]: " CHOICE; then
+            echo
+            echo "[INFO] No interactive input available. Exiting."
+            return 0
+        fi
+
+        case "${CHOICE}" in
+            1)
+                if ! install_ssh_policy; then
+                    echo
+                    echo "[ERROR] Installation failed."
+                    echo
+                    return 1
+                fi
+                ;;
+            2)
+                uninstall_ssh_policy
+                ;;
+            3)
                 echo
-                echo "[ERROR] Installation failed."
+                echo "[INFO] Exiting."
                 echo
-                exit 1
-            fi
-            ;;
+                return 0
+                ;;
+            *)
+                echo
+                echo "[ERROR] Invalid selection."
+                echo
+                ;;
+        esac
+    done
+}
 
-        2)
-            uninstall_ssh_policy
-            ;;
-
-        3)
-            echo
-            echo "[INFO] Exiting."
-            echo
-            exit 0
-            ;;
-
-        *)
-            echo
-            echo "[ERROR] Invalid selection."
-            echo
-            ;;
-
-    esac
-
-done
+case "${1:-}" in
+    install)
+        install_ssh_policy
+        ;;
+    uninstall)
+        uninstall_ssh_policy
+        ;;
+    "")
+        if [[ ! -t 0 ]]; then
+            echo "[ERROR] A command is required when stdin is not interactive."
+            usage
+            exit 2
+        fi
+        run_menu
+        ;;
+    *)
+        usage
+        exit 2
+        ;;
+esac

@@ -83,23 +83,18 @@ tailscale ip -4
 在 VPS 上运行：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/himydearfriends1934-cmyk/ssh-tailscale-autorestart/main/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/himydearfriends1934-cmyk/ssh-tailscale-autorestart/main/install.sh | sudo bash -s -- install
 ```
 
-脚本会显示：
+也可以下载后使用交互菜单：
 
 ```text
-==============================================
- SSH Auto-Restart for Tailscale / VPN IP
- Version 2.0
-==============================================
-
-  1) Install
-  2) Uninstall
-  3) Exit
-
-Please select [1-3]:
+curl -fL -o install.sh \
+  https://raw.githubusercontent.com/himydearfriends1934-cmyk/ssh-tailscale-autorestart/main/install.sh
+sudo bash install.sh
 ```
+
+管道执行时请显式指定 `install`，因为脚本内容本身占用了标准输入。
 
 ---
 
@@ -281,23 +276,26 @@ sshd -t
 ### SSH systemd override
 
 ```text
-/etc/systemd/system/ssh.service.d/override.conf
+/etc/systemd/system/ssh.service.d/90-tailscale-ssh-autorestart.conf
 ```
 
 或者：
 
 ```text
-/etc/systemd/system/sshd.service.d/override.conf
+/etc/systemd/system/sshd.service.d/90-tailscale-ssh-autorestart.conf
 ```
 
 内容类似：
 
 ```ini
 [Unit]
+# Managed by ssh-tailscale-autorestart
 After=tailscaled.service
 Wants=tailscaled.service
+StartLimitIntervalSec=0
 
 [Service]
+RestartPreventExitStatus=
 Restart=on-failure
 RestartSec=3s
 ```
@@ -313,6 +311,10 @@ RestartSec=3s
 ```text
 /etc/systemd/system/tailscale-ssh-watch.service
 ```
+
+watcher 只依赖网络和 `tailscaled.service` 的启动顺序，不使用
+`Requires=ssh.service`。这样 watcher 在 SSH 启动失败时仍然可以运行并重试 SSH，
+同时 SSH 重启不会把 watcher 自己连带停止。
 
 ---
 
@@ -425,28 +427,22 @@ systemctl daemon-reload
 运行：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/himydearfriends1934-cmyk/ssh-tailscale-autorestart/main/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/himydearfriends1934-cmyk/ssh-tailscale-autorestart/main/install.sh | sudo bash -s -- uninstall
 ```
 
-然后选择：
+卸载只会删除带有本项目标记的文件，以及能够明确识别为旧版本生成的文件：
 
 ```text
-2
-```
-
-卸载会删除本项目创建的：
-
-```text
-/etc/systemd/system/ssh.service.d/override.conf
+/etc/systemd/system/ssh.service.d/90-tailscale-ssh-autorestart.conf
 ```
 
 或：
 
 ```text
-/etc/systemd/system/sshd.service.d/override.conf
+/etc/systemd/system/sshd.service.d/90-tailscale-ssh-autorestart.conf
 ```
 
-以及：
+以及 watcher 文件：
 
 ```text
 /usr/local/sbin/tailscale-ssh-watch
@@ -459,6 +455,7 @@ curl -fsSL https://raw.githubusercontent.com/himydearfriends1934-cmyk/ssh-tailsc
 ```
 
 然后重新加载 systemd，并恢复 SSH 服务到项目安装前的 systemd 配置。
+未知的同名文件会被保留并显示警告，不会被强制删除。
 
 ---
 
@@ -590,7 +587,7 @@ bash -n install.sh
 然后运行：
 
 ```bash
-sudo bash install.sh
+sudo bash install.sh install
 ```
 
 推荐生产环境使用这种方式，以便在执行前检查脚本内容。
@@ -689,10 +686,7 @@ LISTEN 0 128 100.x.x.x:22
 * NetworkManager / systemd-networkd 状态检测
 * IP 检测间隔可配置
 * `sshd -t` 更完善的错误处理
-* SSH restart failure 自动重试
-* 安装前自动备份现有 override
 * dry-run 模式
-* 非交互式安装参数
 * ShellCheck CI
 * GitHub Actions 自动测试
 
