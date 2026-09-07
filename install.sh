@@ -643,11 +643,11 @@ install_ssh_policy() {
     OVERRIDE_FILE="/etc/systemd/system/${SSH_SERVICE}.d/${OVERRIDE_NAME}"
     WATCHER_SERVICE_FILE="/etc/systemd/system/${WATCHER_SERVICE}"
 
-    if systemctl is-enabled --quiet "${WATCHER_SERVICE}"; then
+    if systemctl is-enabled --quiet "${WATCHER_SERVICE}" 2>/dev/null; then
         WATCHER_WAS_ENABLED=1
     fi
 
-    if systemctl is-active --quiet "${WATCHER_SERVICE}"; then
+    if systemctl is-active --quiet "${WATCHER_SERVICE}" 2>/dev/null; then
         WATCHER_WAS_ACTIVE=1
     fi
 
