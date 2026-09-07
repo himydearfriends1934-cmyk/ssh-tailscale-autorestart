@@ -2,9 +2,9 @@
 
 A lightweight `systemd` override configuration to automatically resolve SSH boot-time race conditions when binding `sshd` to specific virtual network interface IPs (such as Tailscale, WireGuard, or ZeroTier).
 
-## Problem
+## Quick Install (One-Liner)
 
-When you configure a specific internal IP in `/etc/ssh/sshd_config`:
+Run the following command on your VPS (click the copy icon on the right to copy):
 
-```sshd
-ListenAddress 100.x.x.x
+```bash
+curl -sSL [https://raw.githubusercontent.com/himydearfriends1934-cmyk/ssh-tailscale-autorestart/main/install.sh](https://raw.githubusercontent.com/himydearfriends1934-cmyk/ssh-tailscale-autorestart/main/install.sh) | sudo bash
