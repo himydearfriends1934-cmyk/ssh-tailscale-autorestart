@@ -4,7 +4,7 @@ A lightweight `systemd` override configuration to automatically resolve SSH boot
 
 ## Quick Install (One-Liner)
 
-Run the following command on your VPS (click the copy icon on the right to copy):
+> **Note**: Hover over the code block below and click the **Copy icon** on the right side to copy the clean command directly into your terminal.
 
 ```bash
 curl -sSL [https://raw.githubusercontent.com/himydearfriends1934-cmyk/ssh-tailscale-autorestart/main/install.sh](https://raw.githubusercontent.com/himydearfriends1934-cmyk/ssh-tailscale-autorestart/main/install.sh) | sudo bash
