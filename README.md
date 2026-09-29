@@ -77,33 +77,34 @@ tailscale ip -4
 100.x.x.x
 ```
 
----
+# Quick Install & Commands
 
-# Quick Install
-
-在 VPS 上运行：
+在 VPS 上快捷安装 Watcher 服务：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/himydearfriends1934-cmyk/ssh-tailscale-autorestart/main/install.sh | sudo bash -s -- install
 ```
 
-也可以下载后使用交互菜单：
+也可以下载脚本后使用交互菜单或直接执行子命令：
 
-```text
+```bash
 curl -fL -o install.sh \
   https://raw.githubusercontent.com/himydearfriends1934-cmyk/ssh-tailscale-autorestart/main/install.sh
-sudo bash install.sh
+chmod +x install.sh
 ```
 
-管道执行时请显式指定 `install`，因为脚本内容本身占用了标准输入。
+### 命令行非交互执行
 
-安装成功时只显示：
-
-```text
-Installation completed.
+```bash
+sudo ./install.sh install              # 安装 SSH 自动恢复 watcher
+sudo ./install.sh uninstall            # 卸载 watcher 并恢复 systemd 初始状态
+sudo ./install.sh restrict-ssh         # 设置 SSH 仅允许 Tailscale IP 登录
+sudo ./install.sh restore-ssh-listen   # 恢复 SSH 默认全网卡监听登录状态
 ```
 
-不带参数运行下载后的脚本会显示简洁菜单：
+### 交互菜单
+
+在终端直接运行 `sudo ./install.sh` 会显示菜单：
 
 ```text
 1) Install (SSH auto-restart watcher)
@@ -113,19 +114,66 @@ Installation completed.
 5) Exit
 ```
 
-选择第 2 项时会先要求确认，然后删除本项目配置并恢复 SSH 到安装前的 systemd 状态。
-选择第 3 项会将 `/etc/ssh/sshd_config` 设置为仅监听 Tailscale IP，并自动备份原配置。
-选择第 4 项会移除 Tailscale IP 绑定限制，恢复监听所有网卡接口。
+* **选项 1 (Install)**：安装并启动 Tailscale IP 变动监控与 SSH 自动恢复服务。
+* **选项 2 (Delete configuration...)**：完全卸载本项目安装的 watcher 服务与 systemd 覆写。
+* **选项 3 (Restrict SSH to Tailscale IP only)**：配置 SSH 仅绑定监听 Tailscale IPv4 地址，阻断公网 SSH 爆破。
+* **选项 4 (Restore SSH to default)**：还原 SSH 监听配置，重新允许通过所有网卡/公网 IP 登录。
+* **选项 5 (Exit)**：退出脚本。
 
 ---
 
-# Install
+# Restrict SSH to Tailscale IP Only
 
-选择：
+很多 VPS 用户希望将 SSH 端口完全隐藏在 Tailscale 内网中，不对公网开放。
 
-```text
-1
+### 为什么需要这个功能？
+* **杜绝公网爆破**：公网扫描器和恶意攻击无法触及 SSH 端口。
+* **无需配置复杂防火墙**：直接在 `sshd_config` 层级绑定 Tailscale 分配的 100.x.x.x 内网 IP。
+
+### 操作方式
+通过菜单选择 `3`，或运行：
+```bash
+sudo ./install.sh restrict-ssh
 ```
+
+### 执行逻辑与安全防护：
+1. **自动获取 IP**：检测 Tailscale 状态并抓取当前分配的 Tailscale IPv4（如 `100.x.x.x`）。
+2. **自动备份配置**：首次执行时将原始 `/etc/ssh/sshd_config` 完整备份为 `/etc/ssh/sshd_config.ssh-tailscale-autorestart.bak`（已存在备份则跳过，不覆盖初次原件）。
+3. **安全注释冲突**：清理可能存在的旧标记，并将已有未加限制的 `ListenAddress` 行注释掉。
+4. **注入专属标记块**：
+   ```text
+   # ListenAddress managed by ssh-tailscale-autorestart
+   ListenAddress 100.x.x.x
+   ```
+5. **语法预检 (`sshd -t`)**：在重启 SSH 之前严格校验配置。如果校验失败，**立即自动还原备份文件**，绝不留下破损配置。
+6. **平滑重启服务**：通过检测到的 SSH 服务名（`ssh.service` 或 `sshd.service`）平滑重启。若重启异常，同样自动回滚并再次重启。
+
+> [!WARNING]
+> **重要提示**：在执行此操作前，请确保你已经连接到 Tailscale 网络，或者正在通过控制台/VNC 操作。执行后，公网 IP 将无法再连接 SSH！建议配合**选项 1 (Watcher)** 一同使用，这样即使 VPS 重启导致 Tailscale 重新分配 IP，Watcher 也会自动同步重启 SSH。
+
+---
+
+# Restore SSH Default Listen State
+
+当你需要将 VPS 恢复到可以通过公网 IP 正常登录，或准备交接机器时，可随时一键恢复。
+
+### 操作方式
+通过菜单选择 `4`，或运行：
+```bash
+sudo ./install.sh restore-ssh-listen
+```
+
+### 执行逻辑：
+1. **精准清理**：仅删除由本项目添加的 `# ListenAddress managed by ...` 标记块。
+2. **恢复注释配置**：恢复此前被注释的常规 `ListenAddress` 行。
+3. **备份还原提示**：如果检测到历史备份 `/etc/ssh/sshd_config.ssh-tailscale-autorestart.bak`，会提示用户是否直接一键覆写还原为备份的原版文件。
+4. **语法预检与重启**：执行 `sshd -t` 预检无误后重启 SSH 服务。
+
+---
+
+# Install Watcher (Option 1)
+
+选择菜单 `1` 或执行 `sudo ./install.sh install`：
 
 安装程序会：
 
@@ -571,18 +619,15 @@ SSH 仍然监听旧地址
 
 这个项目需要 root 权限，因为它会：
 
-* 创建 `/etc/systemd/system/`
-* 创建 `/usr/local/sbin/`
-* 修改 SSH systemd override
-* 重启 SSH service
+* 在 `/etc/systemd/system/` 下配置 service 及 override
+* 在 `/usr/local/sbin/` 下安装 watcher 监控脚本
+* 重启 SSH service 以应用变更
 
-安装脚本本身不会修改：
-
-```text
-/etc/ssh/sshd_config
-```
-
-也不会修改 SSH authentication 设置。
+关于配置文件安全：
+* **核心 Watcher 安装（选项 1）**：保持完全非侵入，**不会修改** `/etc/ssh/sshd_config`。
+* **限制 Tailscale IP 登录（选项 3）**：仅在显式执行时修改，自动备份原配置到 `.bak` 文件，修改前后均有 `sshd -t` 安全校验，失败自动回滚。
+* **从不修改** SSH 身份认证（密码/证书/端口）等其他配置。
+* **从不删除** 任何 SSH Keys 或密钥文件。
 
 ---
 
