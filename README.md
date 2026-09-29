@@ -38,7 +38,8 @@ curl -fsSL https://raw.githubusercontent.com/himydearfriends1934-cmyk/ssh-tailsc
   * 彻底删除 Tailscale 软件及配置（自带防失联安全回滚保护）
 * Tailscale IP 变动/消失/恢复时自动重启并重绑 SSH
 * SSH 服务异常退出时由 systemd 自动恢复
-* 重启 SSH 前自动执行 `sshd -t` 语法预检，失败自动安全回滚
+* 重启 SSH 前执行 `sshd -t` 语法预检，并验证最终监听地址确实只有 Tailscale IPv4
+* 安装失败、SSH 重启失败或有效配置不符合预期时自动安全回滚
 * 不删除 SSH keys，保障系统安全
 
 ---
@@ -52,6 +53,7 @@ curl -fsSL https://raw.githubusercontent.com/himydearfriends1934-cmyk/ssh-tailsc
 * systemd
 * OpenSSH Server
 * Tailscale（选项 1 会自动检测并提示）
+* `flock`（通常由 `util-linux` 提供）
 * root 权限
 
 ---
@@ -95,8 +97,8 @@ sudo ./install.sh 4                    # 彻底删除 Tailscale 软件及配置
   4. 严格执行 `sshd -t` 语法检测，若出现任何异常自动回滚，杜绝失联。
 
 ### 2. 恢复到网络原来的状态 (恢复公网 IP 登录)
-* **平滑还原**：移除由本项目管理的 `ListenAddress` 标记块，取消原有配置的注释。
-* **备份还原**：若存在原版备份文件，支持一键还原。
+* **完整还原**：若存在安装前备份，优先恢复完整的 `/etc/ssh/sshd_config`。
+* 没有备份时，只移除由本项目管理的 `ListenAddress` 标记块，不会批量取消用户自己的注释。
 * **恢复全网卡访问**：重启 SSH 后即可通过原有公网 IP / 域名正常登录 VPS。
 
 ### 3. 删除 Tailscale 自启动
@@ -430,13 +432,16 @@ systemctl daemon-reload
 
 # Uninstall
 
-运行：
+删除本项目的 watcher 和 systemd 配置：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/himydearfriends1934-cmyk/ssh-tailscale-autorestart/main/install.sh | sudo bash -s -- uninstall
 ```
 
-也可以在交互菜单中选择 `2`，确认后删除本项目配置并恢复 SSH。
+也可以在交互菜单中选择 `3`。该操作只删除本项目的自动监控配置，不会自动把 SSH 从 Tailscale IP 恢复到公网。
+如果需要恢复公网监听，请先选择菜单 `2`。
+
+菜单 `4` 才是彻底卸载 Tailscale。交互模式会先确认，再恢复 SSH 公网监听，之后才停止并卸载 Tailscale。
 
 卸载只会删除带有本项目标记的文件，以及能够明确识别为旧版本生成的文件：
 
@@ -561,8 +566,8 @@ SSH 仍然监听旧地址
 * 重启 SSH service 以应用变更
 
 关于配置文件安全：
-* **核心 Watcher 安装（选项 1）**：保持完全非侵入，**不会修改** `/etc/ssh/sshd_config`。
-* **限制 Tailscale IP 登录（选项 3）**：仅在显式执行时修改，自动备份原配置到 `.bak` 文件，修改前后均有 `sshd -t` 安全校验，失败自动回滚。
+* **选项 1** 会显式修改 `/etc/ssh/sshd_config`，把 SSH 限制到当前 Tailscale IPv4，同时安装 watcher。
+* 修改前会备份原配置，修改后执行 `sshd -t`，并用 `sshd -T` 检查最终有效监听地址；检查失败会恢复备份。
 * **从不修改** SSH 身份认证（密码/证书/端口）等其他配置。
 * **从不删除** 任何 SSH Keys 或密钥文件。
 
@@ -690,10 +695,8 @@ LISTEN 0 128 100.x.x.x:22
 * Tailscale IPv6 支持
 * NetworkManager / systemd-networkd 状态检测
 * IP 检测间隔可配置
-* `sshd -t` 更完善的错误处理
 * dry-run 模式
-* ShellCheck CI
-* GitHub Actions 自动测试
+* ShellCheck CI 和 GitHub Actions 自动测试
 
 ---
 
