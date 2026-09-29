@@ -3,7 +3,7 @@ set -euo pipefail
 
 # ============================================================
 # SSH Auto-Restart for Tailscale / VPN IP Binding
-# Version: 2.1
+# Version: 2.2
 #
 # Features:
 #   - Detect ssh.service / sshd.service
@@ -13,6 +13,8 @@ set -euo pipefail
 #   - Restart SSH when the service itself fails
 #   - Validate sshd configuration before restart
 #   - Clean install / uninstall
+#   - Restrict SSH to Tailscale IP only (ListenAddress)
+#   - Restore SSH to default listen-on-all-interfaces
 #
 # Project:
 # https://github.com/himydearfriends1934-cmyk/ssh-tailscale-autorestart
@@ -23,6 +25,10 @@ WATCHER_PATH="/usr/local/sbin/tailscale-ssh-watch"
 WATCHER_SERVICE="tailscale-ssh-watch.service"
 OVERRIDE_NAME="90-tailscale-ssh-autorestart.conf"
 MANAGED_HEADER="# Managed by ${PROJECT_NAME}"
+
+SSHD_CONFIG="/etc/ssh/sshd_config"
+SSHD_CONFIG_BACKUP="/etc/ssh/sshd_config.${PROJECT_NAME}.bak"
+LISTEN_ADDRESS_MARKER="# ListenAddress managed by ${PROJECT_NAME}"
 
 declare -a INSTALL_BACKUP_FILES=()
 declare -a INSTALL_CREATED_FILES=()
@@ -822,6 +828,189 @@ uninstall_ssh_policy() {
     fi
 }
 
+# ------------------------------------------------------------
+# Restrict SSH to Tailscale IP only
+# ------------------------------------------------------------
+
+restrict_ssh_to_tailscale() {
+
+    # --------------------------------------------------------
+    # Need Tailscale command
+    # --------------------------------------------------------
+
+    if ! TAILSCALE_COMMAND="$(detect_tailscale_command)"; then
+        echo
+        echo "[ERROR] tailscale command was not found."
+        echo
+        echo "Install Tailscale first, then run this option again."
+        echo
+        return 1
+    fi
+
+    # --------------------------------------------------------
+    # Get current Tailscale IPv4
+    # --------------------------------------------------------
+
+    local TS_IP
+    TS_IP="$("${TAILSCALE_COMMAND}" ip -4 2>/dev/null | head -n1 | tr -d '[:space:]')" || true
+
+    if [[ -z "${TS_IP}" ]]; then
+        echo
+        echo "[ERROR] Cannot get Tailscale IPv4 address."
+        echo "        Make sure Tailscale is running and connected."
+        echo
+        return 1
+    fi
+
+    # Validate IP format
+    if ! [[ "${TS_IP}" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
+        echo "[ERROR] Unexpected IP format: ${TS_IP}"
+        return 1
+    fi
+
+    echo "Tailscale IPv4: ${TS_IP}"
+
+    # --------------------------------------------------------
+    # Backup sshd_config if not already done
+    # --------------------------------------------------------
+
+    if [[ -f "${SSHD_CONFIG_BACKUP}" ]]; then
+        echo "[INFO] Backup already exists: ${SSHD_CONFIG_BACKUP}"
+        echo "[INFO] Skipping backup to avoid overwriting original."
+    else
+        if ! cp -a -- "${SSHD_CONFIG}" "${SSHD_CONFIG_BACKUP}"; then
+            echo "[ERROR] Failed to back up ${SSHD_CONFIG}."
+            return 1
+        fi
+        echo "Backup saved: ${SSHD_CONFIG_BACKUP}"
+    fi
+
+    # --------------------------------------------------------
+    # Remove any previously managed ListenAddress lines
+    # --------------------------------------------------------
+
+    # Remove the marker line and the ListenAddress line directly after it
+    sed -i "/^${LISTEN_ADDRESS_MARKER//\//\\/}$/,+1d" "${SSHD_CONFIG}" 2>/dev/null || true
+
+    # Also remove any leftover bare managed ListenAddress lines
+    sed -i "/^ListenAddress.*# ${PROJECT_NAME}$/d" "${SSHD_CONFIG}" 2>/dev/null || true
+
+    # --------------------------------------------------------
+    # Comment out any existing ListenAddress directives
+    # (so they don't conflict)
+    # --------------------------------------------------------
+
+    sed -i "s/^ListenAddress /#ListenAddress /g" "${SSHD_CONFIG}"
+
+    # --------------------------------------------------------
+    # Append managed ListenAddress block
+    # --------------------------------------------------------
+
+    printf '\n%s\nListenAddress %s\n' \
+        "${LISTEN_ADDRESS_MARKER}" \
+        "${TS_IP}" \
+        >> "${SSHD_CONFIG}"
+
+    # --------------------------------------------------------
+    # Validate and restart SSH
+    # --------------------------------------------------------
+
+    if ! validate_sshd_config; then
+        echo
+        echo "[ERROR] sshd_config validation failed. Restoring original."
+        cp -a -- "${SSHD_CONFIG_BACKUP}" "${SSHD_CONFIG}"
+        return 1
+    fi
+
+    SSH_SERVICE="$(detect_ssh_service)" || SSH_SERVICE="ssh.service"
+
+    if ! systemctl restart "${SSH_SERVICE}" >/dev/null 2>&1; then
+        echo
+        echo "[ERROR] SSH restart failed. Restoring original config."
+        cp -a -- "${SSHD_CONFIG_BACKUP}" "${SSHD_CONFIG}"
+        systemctl restart "${SSH_SERVICE}" >/dev/null 2>&1 || true
+        return 1
+    fi
+
+    echo
+    echo "Done. SSH now listens ONLY on Tailscale IP: ${TS_IP}"
+    echo "To undo, choose option 4 in the menu or run: $0 restore-ssh-listen"
+    echo
+}
+
+# ------------------------------------------------------------
+# Restore SSH to default listen-on-all-interfaces
+# ------------------------------------------------------------
+
+restore_ssh_listen() {
+
+    # --------------------------------------------------------
+    # Remove managed ListenAddress block from sshd_config
+    # --------------------------------------------------------
+
+    if grep -Fq "${LISTEN_ADDRESS_MARKER}" "${SSHD_CONFIG}" 2>/dev/null; then
+
+        # Remove the marker line and the ListenAddress line after it
+        sed -i "/^${LISTEN_ADDRESS_MARKER//\//\\/}$/,+1d" "${SSHD_CONFIG}"
+
+        echo "Removed managed ListenAddress from ${SSHD_CONFIG}."
+
+    else
+        echo "[INFO] No managed ListenAddress found in ${SSHD_CONFIG}."
+    fi
+
+    # Re-enable any previously commented-out ListenAddress lines
+    sed -i "s/^#ListenAddress /ListenAddress /g" "${SSHD_CONFIG}"
+
+    # --------------------------------------------------------
+    # Restore from backup if available
+    # --------------------------------------------------------
+
+    if [[ -f "${SSHD_CONFIG_BACKUP}" ]]; then
+        local CONFIRMATION
+        echo
+        echo "A backup of the original sshd_config was found:"
+        echo "  ${SSHD_CONFIG_BACKUP}"
+        if ! read -r -p "Restore from backup instead? [y/N]: " CONFIRMATION; then
+            CONFIRMATION="n"
+        fi
+        case "${CONFIRMATION}" in
+            y|Y|yes|YES)
+                cp -a -- "${SSHD_CONFIG_BACKUP}" "${SSHD_CONFIG}"
+                rm -f -- "${SSHD_CONFIG_BACKUP}"
+                echo "Original sshd_config restored from backup."
+                ;;
+            *)
+                rm -f -- "${SSHD_CONFIG_BACKUP}"
+                echo "Backup deleted. Kept the inline-edited config."
+                ;;
+        esac
+    fi
+
+    # --------------------------------------------------------
+    # Validate and restart SSH
+    # --------------------------------------------------------
+
+    if ! validate_sshd_config; then
+        echo
+        echo "[ERROR] sshd_config validation failed after restore."
+        echo "        Please check ${SSHD_CONFIG} manually."
+        return 1
+    fi
+
+    SSH_SERVICE="$(detect_ssh_service)" || SSH_SERVICE="ssh.service"
+
+    if ! systemctl restart "${SSH_SERVICE}" >/dev/null 2>&1; then
+        echo "[WARNING] SSH restart failed."
+        echo "          Check: systemctl status ${SSH_SERVICE}"
+        return 1
+    fi
+
+    echo
+    echo "Done. SSH is now restored to default (listening on all interfaces)."
+    echo
+}
+
 confirm_uninstall() {
     local CONFIRMATION
 
@@ -845,7 +1034,13 @@ confirm_uninstall() {
 # ------------------------------------------------------------
 
 usage() {
-    echo "Usage: $0 {install|uninstall}"
+    echo "Usage: $0 {install|uninstall|restrict-ssh|restore-ssh-listen}"
+    echo
+    echo "Commands:"
+    echo "  install              Install the Tailscale SSH auto-restart watcher"
+    echo "  uninstall            Remove the watcher and restore pre-install state"
+    echo "  restrict-ssh         Restrict SSH to listen on Tailscale IP only"
+    echo "  restore-ssh-listen   Restore SSH to listen on all interfaces"
     echo
     echo "Without an argument, an interactive menu is shown only on a terminal."
 }
@@ -853,11 +1048,13 @@ usage() {
 run_menu() {
     local CHOICE
 
-    echo "1) Install"
+    echo "1) Install (SSH auto-restart watcher)"
     echo "2) Delete configuration and restore the pre-install state"
-    echo "3) Exit"
+    echo "3) Restrict SSH to Tailscale IP only"
+    echo "4) Restore SSH to default (listen on all interfaces)"
+    echo "5) Exit"
 
-    if ! read -r -p "Select [1-3]: " CHOICE; then
+    if ! read -r -p "Select [1-5]: " CHOICE; then
         return 0
     fi
 
@@ -869,6 +1066,12 @@ run_menu() {
             confirm_uninstall
             ;;
         3)
+            restrict_ssh_to_tailscale
+            ;;
+        4)
+            restore_ssh_listen
+            ;;
+        5)
             return 0
             ;;
         *)
@@ -888,6 +1091,12 @@ case "${1:-}" in
         else
             uninstall_ssh_policy
         fi
+        ;;
+    restrict-ssh)
+        restrict_ssh_to_tailscale
+        ;;
+    restore-ssh-listen)
+        restore_ssh_listen
         ;;
     "")
         if [[ ! -t 0 ]]; then

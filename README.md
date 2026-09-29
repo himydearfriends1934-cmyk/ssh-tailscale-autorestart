@@ -19,7 +19,8 @@
 * 重启 SSH 前自动执行 `sshd -t`
 * 独立的 systemd watcher 服务
 * 支持安装 / 卸载
-* 不修改 `/etc/ssh/sshd_config`
+* 核心 watcher 默认不侵入修改 `/etc/ssh/sshd_config`
+* 提供一键限制 SSH 仅监听 Tailscale IP 及恢复选项
 * 不删除 SSH keys
 * 不删除 OpenSSH
 * 不删除 Tailscale
@@ -105,12 +106,16 @@ Installation completed.
 不带参数运行下载后的脚本会显示简洁菜单：
 
 ```text
-1) Install
+1) Install (SSH auto-restart watcher)
 2) Delete configuration and restore the pre-install state
-3) Exit
+3) Restrict SSH to Tailscale IP only
+4) Restore SSH to default (listen on all interfaces)
+5) Exit
 ```
 
 选择第 2 项时会先要求确认，然后删除本项目配置并恢复 SSH 到安装前的 systemd 状态。
+选择第 3 项会将 `/etc/ssh/sshd_config` 设置为仅监听 Tailscale IP，并自动备份原配置。
+选择第 4 项会移除 Tailscale IP 绑定限制，恢复监听所有网卡接口。
 
 ---
 
