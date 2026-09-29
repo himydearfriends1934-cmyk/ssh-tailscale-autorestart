@@ -10,14 +10,18 @@
 
 ## ⚡ 一键安装 / 交互管理
 
-**直接一键安装（默认自动监控并重启 SSH）：**
-```bash
-curl -fsSL https://raw.githubusercontent.com/himydearfriends1934-cmyk/ssh-tailscale-autorestart/main/install.sh | sudo bash -s -- install
-```
-
-**或者下载并打开交互管理菜单（支持设置仅 Tailscale IP 登录 / 恢复原始状态）：**
+**直接下载并打开交互管理菜单：**
 ```bash
 curl -fL -o install.sh https://raw.githubusercontent.com/himydearfriends1934-cmyk/ssh-tailscale-autorestart/main/install.sh && sudo bash install.sh
+```
+
+**或者通过管道直接执行对应命令：**
+```bash
+# 1) 设置仅 Tailscale IPv4 登录 (自动联动配置自启动)
+curl -fsSL https://raw.githubusercontent.com/himydearfriends1934-cmyk/ssh-tailscale-autorestart/main/install.sh | sudo bash -s -- 1
+
+# 2) 恢复到网络原来的状态 (恢复公网 IP 登录)
+curl -fsSL https://raw.githubusercontent.com/himydearfriends1934-cmyk/ssh-tailscale-autorestart/main/install.sh | sudo bash -s -- 2
 ```
 
 ---
@@ -27,169 +31,87 @@ curl -fL -o install.sh https://raw.githubusercontent.com/himydearfriends1934-cmy
 * 自动检测 `ssh.service` / `sshd.service`
 * 自动检测 `tailscaled.service`
 * 监控真实的 Tailscale IPv4 地址
-* Tailscale IP 首次出现时自动重启 SSH
-* Tailscale IP 消失后等待恢复
-* Tailscale IP 恢复后自动重启 SSH
-* Tailscale IP 发生变化时自动重启 SSH
+* **仅需关注两个网络状态**：
+  * **状态 1**：一键设置仅 Tailscale IPv4 SSH 登录（**自动联动启用 Tailscale 自启动守护**）
+  * **状态 2**：一键恢复网络原始状态（恢复公网 IP 登录）
+* **支持彻底卸载与清理**：
+  * 随时删除 Tailscale 自启动监控服务
+  * 彻底删除 Tailscale 软件及配置（自带防失联安全回滚保护）
+* Tailscale IP 变动/消失/恢复时自动重启并重绑 SSH
 * SSH 服务异常退出时由 systemd 自动恢复
-* 重启 SSH 前自动执行 `sshd -t`
-* 独立的 systemd watcher 服务
-* 支持安装 / 卸载
-* 核心 watcher 默认不侵入修改 `/etc/ssh/sshd_config`
-* 提供一键限制 SSH 仅监听 Tailscale IP 及恢复选项
-* 不删除 SSH keys
-* 不删除 OpenSSH
-* 不删除 Tailscale
+* 重启 SSH 前自动执行 `sshd -t` 语法预检，失败自动安全回滚
+* 不删除 SSH keys，保障系统安全
 
 ---
 
 ## Requirements
 
-目前 v2 主要面向使用 `systemd` 的 Linux VPS。
+目前主要面向使用 `systemd` 的 Linux VPS。
 
 需要：
-
-* Linux
+* Linux (Debian, Ubuntu, CentOS, RHEL, Fedora, Rocky, Alma, Arch, Alpine 等)
 * systemd
 * OpenSSH Server
-* Tailscale
-* `tailscaled.service`
-* `tailscale` 命令
+* Tailscale（选项 1 会自动检测并提示）
 * root 权限
 
-检查：
+---
 
-```bash
-systemctl --version
-```
+# 交互管理菜单与命令行选项
 
-检查 SSH：
-
-```bash
-systemctl status ssh
-```
-
-或者：
-
-```bash
-systemctl status sshd
-```
-
-检查 Tailscale：
-
-```bash
-systemctl status tailscaled
-```
-
-检查 Tailscale IP：
-
-```bash
-tailscale ip -4
-```
-
-正常情况下应该看到类似：
+在终端直接运行 `sudo ./install.sh` 会显示菜单：
 
 ```text
-100.x.x.x
-```
-
-# Quick Install & Commands
-
-在 VPS 上快捷安装 Watcher 服务：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/himydearfriends1934-cmyk/ssh-tailscale-autorestart/main/install.sh | sudo bash -s -- install
-```
-
-也可以下载脚本后使用交互菜单或直接执行子命令：
-
-```bash
-curl -fL -o install.sh \
-  https://raw.githubusercontent.com/himydearfriends1934-cmyk/ssh-tailscale-autorestart/main/install.sh
-chmod +x install.sh
+============================================================
+ SSH & Tailscale 网络管理工具
+============================================================
+1) 设置仅 Tailscale IPv4 SSH (自动配置自启动)
+2) 恢复到网络原来的状态 (恢复公网 IP 登录)
+3) 删除 Tailscale 自启动
+4) 删除 Tailscale
+5) 退出脚本
+============================================================
 ```
 
 ### 命令行非交互执行
 
 ```bash
-sudo ./install.sh install              # 安装 SSH 自动恢复 watcher
-sudo ./install.sh uninstall            # 卸载 watcher 并恢复 systemd 初始状态
-sudo ./install.sh restrict-ssh         # 设置 SSH 仅允许 Tailscale IP 登录
-sudo ./install.sh restore-ssh-listen   # 恢复 SSH 默认全网卡监听登录状态
+sudo ./install.sh 1                    # 设置仅 Tailscale IPv4 SSH (自动配置自启动)
+sudo ./install.sh 2                    # 恢复到网络原来的状态 (恢复公网 IP 登录)
+sudo ./install.sh 3                    # 删除 Tailscale 自启动
+sudo ./install.sh 4                    # 彻底删除 Tailscale 软件及配置
 ```
-
-### 交互菜单
-
-在终端直接运行 `sudo ./install.sh` 会显示菜单：
-
-```text
-1) Install (SSH auto-restart watcher)
-2) Delete configuration and restore the pre-install state
-3) Restrict SSH to Tailscale IP only
-4) Restore SSH to default (listen on all interfaces)
-5) Exit
-```
-
-* **选项 1 (Install)**：安装并启动 Tailscale IP 变动监控与 SSH 自动恢复服务。
-* **选项 2 (Delete configuration...)**：完全卸载本项目安装的 watcher 服务与 systemd 覆写。
-* **选项 3 (Restrict SSH to Tailscale IP only)**：配置 SSH 仅绑定监听 Tailscale IPv4 地址，阻断公网 SSH 爆破。
-* **选项 4 (Restore SSH to default)**：还原 SSH 监听配置，重新允许通过所有网卡/公网 IP 登录。
-* **选项 5 (Exit)**：退出脚本。
 
 ---
 
-# Restrict SSH to Tailscale IP Only
+# 菜单功能详解
 
-很多 VPS 用户希望将 SSH 端口完全隐藏在 Tailscale 内网中，不对公网开放。
+### 1. 设置仅 Tailscale IPv4 SSH (自动配置自启动)
+* **核心优势**：只要设置 Tailscale IP 登录，**自动联动安装并运行 Tailscale 自启动守护**！
+* **杜绝公网爆破**：将 SSH 端口完全收敛在 Tailscale 内网中，不对公网开放。
+* **双重保障**：
+  1. 自动安装 `tailscale-ssh-watch` 独立守护服务与 systemd 覆写，确保机器重启或 Tailscale 重新分配 IP 时，SSH 自动重新绑定新 IP。
+  2. 自动备份 `/etc/ssh/sshd_config` 到 `.bak` 文件。
+  3. 写入带专用标记的 `ListenAddress <Tailscale-IP>`。
+  4. 严格执行 `sshd -t` 语法检测，若出现任何异常自动回滚，杜绝失联。
 
-### 为什么需要这个功能？
-* **杜绝公网爆破**：公网扫描器和恶意攻击无法触及 SSH 端口。
-* **无需配置复杂防火墙**：直接在 `sshd_config` 层级绑定 Tailscale 分配的 100.x.x.x 内网 IP。
+### 2. 恢复到网络原来的状态 (恢复公网 IP 登录)
+* **平滑还原**：移除由本项目管理的 `ListenAddress` 标记块，取消原有配置的注释。
+* **备份还原**：若存在原版备份文件，支持一键还原。
+* **恢复全网卡访问**：重启 SSH 后即可通过原有公网 IP / 域名正常登录 VPS。
 
-### 操作方式
-通过菜单选择 `3`，或运行：
-```bash
-sudo ./install.sh restrict-ssh
-```
+### 3. 删除 Tailscale 自启动
+* 如果你打算停止使用 Tailscale 守护监控，选择此项可安全卸载：
+  * 停止并删除 `tailscale-ssh-watch.service` 守护进程
+  * 清理 `/usr/local/sbin/tailscale-ssh-watch` 脚本
+  * 清除 SSH systemd override 配置，并重载 systemd
 
-### 执行逻辑与安全防护：
-1. **自动获取 IP**：检测 Tailscale 状态并抓取当前分配的 Tailscale IPv4（如 `100.x.x.x`）。
-2. **自动备份配置**：首次执行时将原始 `/etc/ssh/sshd_config` 完整备份为 `/etc/ssh/sshd_config.ssh-tailscale-autorestart.bak`（已存在备份则跳过，不覆盖初次原件）。
-3. **安全注释冲突**：清理可能存在的旧标记，并将已有未加限制的 `ListenAddress` 行注释掉。
-4. **注入专属标记块**：
-   ```text
-   # ListenAddress managed by ssh-tailscale-autorestart
-   ListenAddress 100.x.x.x
-   ```
-5. **语法预检 (`sshd -t`)**：在重启 SSH 之前严格校验配置。如果校验失败，**立即自动还原备份文件**，绝不留下破损配置。
-6. **平滑重启服务**：通过检测到的 SSH 服务名（`ssh.service` 或 `sshd.service`）平滑重启。若重启异常，同样自动回滚并再次重启。
-
-> [!WARNING]
-> **重要提示**：在执行此操作前，请确保你已经连接到 Tailscale 网络，或者正在通过控制台/VNC 操作。执行后，公网 IP 将无法再连接 SSH！建议配合**选项 1 (Watcher)** 一同使用，这样即使 VPS 重启导致 Tailscale 重新分配 IP，Watcher 也会自动同步重启 SSH。
+### 4. 彻底删除 Tailscale
+* 彻底从系统中卸载 Tailscale 软件及其相关配置。
+* **贴心防失联保护**：如果检测到当前 SSH 正处于【仅 Tailscale IP 登录】状态，脚本会**自动先恢复 SSH 公网 IP 登录**，然后再卸载 Tailscale，防止用户被永久关在门外！
+* 自动适配 apt / yum / dnf / pacman / apk / zypper 包管理器进行卸载，并清理残留数据目录。
 
 ---
-
-# Restore SSH Default Listen State
-
-当你需要将 VPS 恢复到可以通过公网 IP 正常登录，或准备交接机器时，可随时一键恢复。
-
-### 操作方式
-通过菜单选择 `4`，或运行：
-```bash
-sudo ./install.sh restore-ssh-listen
-```
-
-### 执行逻辑：
-1. **精准清理**：仅删除由本项目添加的 `# ListenAddress managed by ...` 标记块。
-2. **恢复注释配置**：恢复此前被注释的常规 `ListenAddress` 行。
-3. **备份还原提示**：如果检测到历史备份 `/etc/ssh/sshd_config.ssh-tailscale-autorestart.bak`，会提示用户是否直接一键覆写还原为备份的原版文件。
-4. **语法预检与重启**：执行 `sshd -t` 预检无误后重启 SSH 服务。
-
----
-
-# Install Watcher (Option 1)
-
-选择菜单 `1` 或执行 `sudo ./install.sh install`：
 
 安装程序会：
 

@@ -1011,22 +1011,155 @@ restore_ssh_listen() {
     echo
 }
 
-confirm_uninstall() {
-    local CONFIRMATION
+# ------------------------------------------------------------
+# 1) Set SSH to Tailscale IPv4 only (Auto-runs autorestart setup)
+# ------------------------------------------------------------
 
-    if ! read -r -p "Delete configuration and restore the pre-install state? [y/N]: " CONFIRMATION; then
-        echo "Cancelled."
-        return 0
+set_tailscale_only_ssh() {
+    echo "============================================================"
+    echo " [1/2] 正在配置 Tailscale 守护与 SSH 自动重启服务..."
+    echo "============================================================"
+
+    if ! install_ssh_policy; then
+        echo
+        echo "[ERROR] Tailscale 自启动监控服务安装失败，已中止配置。"
+        return 1
     fi
 
-    case "${CONFIRMATION}" in
-        y|Y|yes|YES)
-            uninstall_ssh_policy
-            ;;
-        *)
-            echo "Cancelled."
-            ;;
-    esac
+    echo
+    echo "============================================================"
+    echo " [2/2] 正在设置 SSH 仅允许 Tailscale IPv4 登录..."
+    echo "============================================================"
+
+    if ! restrict_ssh_to_tailscale; then
+        echo
+        echo "[ERROR] 设置 Tailscale IP 绑定失败。"
+        return 1
+    fi
+
+    echo "============================================================"
+    echo "[成功] 已成功设置 SSH 仅 Tailscale IPv4 登录！"
+    echo "[成功] Tailscale 自启动守护已联动生效。"
+    echo "============================================================"
+}
+
+# ------------------------------------------------------------
+# 2) Restore original network state (Public IP login)
+# ------------------------------------------------------------
+
+restore_original_network_state() {
+    echo "============================================================"
+    echo " 正在恢复到网络原始状态（恢复公网 IP 登录）..."
+    echo "============================================================"
+
+    if restore_ssh_listen; then
+        echo "============================================================"
+        echo "[成功] 已恢复公网 IP 登录状态。"
+        echo "============================================================"
+    fi
+}
+
+# ------------------------------------------------------------
+# 3) Remove Tailscale autostart
+# ------------------------------------------------------------
+
+remove_tailscale_autostart() {
+    local CONFIRMATION
+
+    if [[ -t 0 && -t 1 ]]; then
+        if ! read -r -p "确定要删除 Tailscale SSH 自启动监控服务吗？[y/N]: " CONFIRMATION; then
+            echo "已取消。"
+            return 0
+        fi
+
+        case "${CONFIRMATION}" in
+            y|Y|yes|YES)
+                ;;
+            *)
+                echo "已取消。"
+                return 0
+                ;;
+        esac
+    fi
+
+    uninstall_ssh_policy
+}
+
+# ------------------------------------------------------------
+# 4) Completely uninstall Tailscale
+# ------------------------------------------------------------
+
+uninstall_tailscale_complete() {
+    echo "============================================================"
+    echo " 彻底删除 Tailscale"
+    echo "============================================================"
+
+    # 安全防失联检查：如果当前处于仅 Tailscale IP 登录，自动先恢复公网登录
+    if grep -Fq "${LISTEN_ADDRESS_MARKER}" "${SSHD_CONFIG}" 2>/dev/null; then
+        echo
+        echo "[警告] 检测到当前 SSH 正处于【仅 Tailscale IP 登录】状态！"
+        echo "[警告] 若直接删除 Tailscale 将导致服务器彻底失联！"
+        echo "[操作] 正在自动为你先恢复 SSH 原始公网登录状态..."
+        echo
+        if ! restore_ssh_listen; then
+            echo "[ERROR] 恢复公网登录失败，为安全起见，已中止卸载 Tailscale。"
+            return 1
+        fi
+        echo "[提示] 公网 IP 登录已安全恢复。"
+    fi
+
+    local CONFIRMATION
+    if [[ -t 0 && -t 1 ]]; then
+        if ! read -r -p "警告：即将彻底卸载 Tailscale 软件及配置数据，确定继续吗？[y/N]: " CONFIRMATION; then
+            echo "已取消。"
+            return 0
+        fi
+
+        case "${CONFIRMATION}" in
+            y|Y|yes|YES)
+                ;;
+            *)
+                echo "已取消。"
+                return 0
+                ;;
+        esac
+    fi
+
+    echo "1. 清理 Tailscale 自启动监控服务..."
+    uninstall_ssh_policy >/dev/null 2>&1 || true
+
+    echo "2. 停止并禁用 tailscaled 服务..."
+    systemctl stop tailscaled.service >/dev/null 2>&1 || true
+    systemctl disable tailscaled.service >/dev/null 2>&1 || true
+
+    echo "3. 卸载 Tailscale 软件包..."
+    if command -v apt-get >/dev/null 2>&1; then
+        apt-get purge -y tailscale tailscale-archive-keyring >/dev/null 2>&1 || apt-get remove --purge -y tailscale >/dev/null 2>&1 || true
+        rm -f /etc/apt/sources.list.d/tailscale.list /usr/share/keyrings/tailscale-archive-keyring.gpg 2>/dev/null || true
+    elif command -v dnf >/dev/null 2>&1; then
+        dnf remove -y tailscale >/dev/null 2>&1 || true
+        rm -f /etc/yum.repos.d/tailscale.repo 2>/dev/null || true
+    elif command -v yum >/dev/null 2>&1; then
+        yum remove -y tailscale >/dev/null 2>&1 || true
+        rm -f /etc/yum.repos.d/tailscale.repo 2>/dev/null || true
+    elif command -v pacman >/dev/null 2>&1; then
+        pacman -Rns --noconfirm tailscale >/dev/null 2>&1 || true
+    elif command -v apk >/dev/null 2>&1; then
+        apk del tailscale >/dev/null 2>&1 || true
+    elif command -v zypper >/dev/null 2>&1; then
+        zypper remove -y tailscale >/dev/null 2>&1 || true
+    fi
+
+    echo "4. 清理 Tailscale 配置与残留目录..."
+    rm -rf /var/lib/tailscale /var/run/tailscale /etc/tailscale 2>/dev/null || true
+    rm -f /usr/bin/tailscale /usr/sbin/tailscaled 2>/dev/null || true
+
+    systemctl daemon-reload >/dev/null 2>&1 || true
+
+    echo
+    echo "============================================================"
+    echo "[成功] Tailscale 及其自启动服务已完全删除。"
+    echo "============================================================"
 }
 
 # ------------------------------------------------------------
@@ -1034,73 +1167,76 @@ confirm_uninstall() {
 # ------------------------------------------------------------
 
 usage() {
-    echo "Usage: $0 {install|uninstall|restrict-ssh|restore-ssh-listen}"
+    echo "用法: $0 [选项]"
     echo
-    echo "Commands:"
-    echo "  install              Install the Tailscale SSH auto-restart watcher"
-    echo "  uninstall            Remove the watcher and restore pre-install state"
-    echo "  restrict-ssh         Restrict SSH to listen on Tailscale IP only"
-    echo "  restore-ssh-listen   Restore SSH to listen on all interfaces"
+    echo "选项:"
+    echo "  1 | set-tailscale-ssh      设置仅 Tailscale IPv4 SSH (自动联动自启动守护)"
+    echo "  2 | restore-network        恢复到网络原来的状态 (恢复公网 IP 登录)"
+    echo "  3 | remove-autostart       删除 Tailscale 自启动"
+    echo "  4 | uninstall-tailscale    删除 Tailscale 软件及配置"
+    echo "  install                    兼容别名：同选项 1"
+    echo "  uninstall                  兼容别名：同选项 3"
     echo
-    echo "Without an argument, an interactive menu is shown only on a terminal."
+    echo "不带参数时，在终端中启动交互菜单。"
 }
 
 run_menu() {
     local CHOICE
 
-    echo "1) Install (SSH auto-restart watcher)"
-    echo "2) Delete configuration and restore the pre-install state"
-    echo "3) Restrict SSH to Tailscale IP only"
-    echo "4) Restore SSH to default (listen on all interfaces)"
-    echo "5) Exit"
+    echo "============================================================"
+    echo " SSH & Tailscale 网络管理工具"
+    echo "============================================================"
+    echo "1) 设置仅 Tailscale IPv4 SSH (自动配置自启动)"
+    echo "2) 恢复到网络原来的状态 (恢复公网 IP 登录)"
+    echo "3) 删除 Tailscale 自启动"
+    echo "4) 删除 Tailscale"
+    echo "5) 退出脚本"
+    echo "============================================================"
 
-    if ! read -r -p "Select [1-5]: " CHOICE; then
+    if ! read -r -p "请选择 [1-5]: " CHOICE; then
         return 0
     fi
 
     case "${CHOICE}" in
         1)
-            install_ssh_policy
+            set_tailscale_only_ssh
             ;;
         2)
-            confirm_uninstall
+            restore_original_network_state
             ;;
         3)
-            restrict_ssh_to_tailscale
+            remove_tailscale_autostart
             ;;
         4)
-            restore_ssh_listen
+            uninstall_tailscale_complete
             ;;
         5)
+            echo "退出。"
             return 0
             ;;
         *)
-            echo "[ERROR] Invalid selection."
+            echo "[ERROR] 无效选项。"
             return 1
             ;;
     esac
 }
 
 case "${1:-}" in
-    install)
-        install_ssh_policy
+    1|set-tailscale-ssh|restrict-ssh|install)
+        set_tailscale_only_ssh
         ;;
-    uninstall)
-        if [[ -t 0 && -t 1 ]]; then
-            confirm_uninstall
-        else
-            uninstall_ssh_policy
-        fi
+    2|restore-network|restore|restore-ssh-listen)
+        restore_original_network_state
         ;;
-    restrict-ssh)
-        restrict_ssh_to_tailscale
+    3|remove-autostart|uninstall|uninstall-watcher)
+        remove_tailscale_autostart
         ;;
-    restore-ssh-listen)
-        restore_ssh_listen
+    4|uninstall-tailscale)
+        uninstall_tailscale_complete
         ;;
     "")
         if [[ ! -t 0 ]]; then
-            echo "[ERROR] A command is required when stdin is not interactive."
+            echo "[ERROR] 当标准输入非交互时，必须指定命令参数。"
             usage
             exit 2
         fi
@@ -1111,3 +1247,4 @@ case "${1:-}" in
         exit 2
         ;;
 esac
+
