@@ -6,6 +6,22 @@
 
 本项目通过 `systemd` + Tailscale IP watcher 自动检测并恢复 SSH 服务。
 
+---
+
+## ⚡ 一键安装 / 交互管理
+
+**直接一键安装（默认自动监控并重启 SSH）：**
+```bash
+curl -fsSL https://raw.githubusercontent.com/himydearfriends1934-cmyk/ssh-tailscale-autorestart/main/install.sh | sudo bash -s -- install
+```
+
+**或者下载并打开交互管理菜单（支持设置仅 Tailscale IP 登录 / 恢复原始状态）：**
+```bash
+curl -fL -o install.sh https://raw.githubusercontent.com/himydearfriends1934-cmyk/ssh-tailscale-autorestart/main/install.sh && sudo bash install.sh
+```
+
+---
+
 ## Features
 
 * 自动检测 `ssh.service` / `sshd.service`
