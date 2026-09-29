@@ -1,16 +1,7 @@
 # SSH Auto-Restart for Tailscale / VPN IP
 
-一个用于 VPS 的轻量级 SSH 自动恢复工具。
+### ⚡ 一键安装 / 交互管理
 
-当 SSH 服务绑定了 Tailscale / VPN IP 时，如果 VPS 重启、Tailscale IP 消失、重新出现或发生变化，SSH 服务可能无法继续监听新的 IP。
-
-本项目通过 `systemd` + Tailscale IP watcher 自动检测并恢复 SSH 服务。
-
----
-
-## ⚡ 一键安装 / 交互管理
-
-**直接下载并打开交互管理菜单：**
 ```bash
 curl -fL -o install.sh https://raw.githubusercontent.com/himydearfriends1934-cmyk/ssh-tailscale-autorestart/main/install.sh && sudo bash install.sh
 ```
@@ -23,6 +14,14 @@ curl -fsSL https://raw.githubusercontent.com/himydearfriends1934-cmyk/ssh-tailsc
 # 2) 恢复到网络原来的状态 (恢复公网 IP 登录)
 curl -fsSL https://raw.githubusercontent.com/himydearfriends1934-cmyk/ssh-tailscale-autorestart/main/install.sh | sudo bash -s -- 2
 ```
+
+---
+
+一个用于 VPS 的轻量级 SSH 自动恢复工具。
+
+当 SSH 服务绑定了 Tailscale / VPN IP 时，如果 VPS 重启、Tailscale IP 消失、重新出现或发生变化，SSH 服务可能无法继续监听新的 IP。
+
+本项目通过 `systemd` + Tailscale IP watcher 自动检测并恢复 SSH 服务。
 
 ---
 
